@@ -1,374 +1,325 @@
-/**
- * Lib: JSON.ahk
- *     JSON lib for AutoHotkey.
- * Version:
- *     v2.1.3 [updated 04/18/2016 (MM/DD/YYYY)]
- * License:
- *     WTFPL [http://wtfpl.net/]
- * Requirements:
- *     Latest version of AutoHotkey (v1.1+ or v2.0-a+)
- * Installation:
- *     Use #Include JSON.ahk or copy into a function library folder and then
- *     use #Include <JSON>
- * Links:
- *     GitHub:     - https://github.com/cocobelgica/AutoHotkey-JSON
- *     Forum Topic - http://goo.gl/r0zI8t
- *     Email:      - cocobelgica <at> gmail <dot> com
- */
+#Escapechar \
+#CommentFlag //
 
 
-/**
- * Class: JSON
- *     The JSON object contains methods for parsing JSON and converting values
- *     to JSON. Callable - NO; Instantiable - YES; Subclassable - YES;
- *     Nestable(via #Include) - NO.
- * Methods:
- *     Load() - see relevant documentation before method definition header
- *     Dump() - see relevant documentation before method definition header
- */
-class JSON
+// Static initialization for stdlib, by fincs at autohotkey.com forums      //
+__json_init()
 {
-	/**
-	 * Method: Load
-	 *     Parses a JSON string into an AHK value
-	 * Syntax:
-	 *     value := JSON.Load( text [, reviver ] )
-	 * Parameter(s):
-	 *     value      [retval] - parsed value
-	 *     text    [in, ByRef] - JSON formatted string
-	 *     reviver   [in, opt] - function object, similar to JavaScript's
-	 *                           JSON.parse() 'reviver' parameter
-	 */
-	class Load extends JSON.Functor
-	{
-		Call(self, ByRef text, reviver:="")
-		{
-			this.rev := IsObject(reviver) ? reviver : false
-		; Object keys(and array indices) are temporarily stored in arrays so that
-		; we can enumerate them in the order they appear in the document/text instead
-		; of alphabetically. Skip if no reviver function is specified.
-			this.keys := this.rev ? {} : false
+   global
+   static _ := __json_init()
+   $$ := Object()
+   JSON_init()
+}
 
-			static quot := Chr(34), bashq := "\" . quot
-			     , json_value := quot . "{[01234567890-tfn"
-			     , json_value_or_array_closing := quot . "{[]01234567890-tfn"
-			     , object_key_or_object_closing := quot . "}"
 
-			key := ""
-			is_key := false
-			root := {}
-			stack := [root]
-			next := json_value
-			pos := 0
+// Simple access to global variable $$                                      //
+$(path, val = "") {
 
-			while ((ch := SubStr(text, ++pos, 1)) != "") {
-				if InStr(" `t`r`n", ch)
-					continue
-				if !InStr(next, ch, 1)
-					this.ParseError(next, text, pos)
+    global $$
+    tempobj := $$
 
-				holder := stack[1]
-				is_array := holder.IsArray
+    last := (instr(path, ".")
+        ? substr(path, 1+instr(path, ".", false, -1))
+        : path)
 
-				if InStr(",:", ch) {
-					next := (is_key := !is_array && ch == ",") ? quot : json_value
+    Loop, Parse, path, \.
+    {
+        if (val != "") {
+            if (last = A_loopfield){
+                tempObj[A_loopfield] := val
+                continue
+            } else if (!tempObj[A_Loopfield])
+                tempObj[A_loopfield] := Object()
+        } else if (!tempObj)
+            break
+        tempObj := tempObj[A_loopfield]
+    }
 
-				} else if InStr("}]", ch) {
-					ObjRemoveAt(stack, 1)
-					next := stack[1]==root ? "" : stack[1].IsArray ? ",]" : ",}"
+    if (! tempObj)
+        JSON_error("Cannot find or set entry " . path )
+    else
+        return (val = "" ?  tempObj : 0 )
+}
 
-				} else {
-					if InStr("{[", ch) {
-					; Check if Array() is overridden and if its return value has
-					; the 'IsArray' property. If so, Array() will be called normally,
-					; otherwise, use a custom base object for arrays
-						static json_array := Func("Array").IsBuiltIn || ![].IsArray ? {IsArray: true} : 0
-					
-					; sacrifice readability for minor(actually negligible) performance gain
-						(ch == "{")
-							? ( is_key := true
-							  , value := {}
-							  , next := object_key_or_object_closing )
-						; ch == "["
-							: ( value := json_array ? new json_array : []
-							  , next := json_value_or_array_closing )
-						
-						ObjInsertAt(stack, 1, value)
+//  Save JSON string to file                                              //
+JSON_save(obj, filename, spacing=35, block="    ", level=1) {
 
-						if (this.keys)
-							this.keys[value] := []
-					
-					} else {
-						if (ch == quot) {
-							i := pos
-							while (i := InStr(text, quot,, i+1)) {
-								value := StrReplace(SubStr(text, pos+1, i-pos-1), "\\", "\u005c")
+    file         := FileOpen(filename, "w")
+    jsonString   := JSON_to(obj, spacing, block, level) "\n"
+    bytesWritten := file.write(jsonString)
+    file.close()
 
-								static tail := A_AhkVersion<"2" ? 0 : -1
-								if (SubStr(value, tail) != "\")
-									break
-							}
+    if (bytesWritten <= 0)
+        JSON_error("Cannot write file " . filename)
+    else
+        return bytesWritten
+}
 
-							if (!i)
-								this.ParseError("'", text, pos)
+//  Load JSON string from file                                            //
+JSON_load(filename) {
+    file := FileOpen(filename, "r")
+    jsonString := file.read()
+    file.close()
+    if (jsonString == "")
+        JSON_error("No file found, or blank file.")
+    return JSON_from(jsonString)
+}
 
-							  value := StrReplace(value,  "\/",  "/")
-							, value := StrReplace(value, bashq, quot)
-							, value := StrReplace(value,  "\b", "`b")
-							, value := StrReplace(value,  "\f", "`f")
-							, value := StrReplace(value,  "\n", "`n")
-							, value := StrReplace(value,  "\r", "`r")
-							, value := StrReplace(value,  "\t", "`t")
+//  Error handling                                                        //
+JSON_error(s){
+    Msgbox, % "[" . A_now . "] " . s
+    Exit
+}
 
-							pos := i ; update pos
-							
-							i := 0
-							while (i := InStr(value, "\",, i+1)) {
-								if !(SubStr(value, i+1, 1) == "u")
-									this.ParseError("\", text, pos - StrLen(SubStr(value, i+1)))
+//  Escape / unescape json keys and values                                //
+JSON_escape(s){
+    StringReplace, s, s, \\, \\\\, All
+    StringReplace, s, s, ', \\',   All
+    StringReplace, s, s, ", \\",   All
+    return s
+}
+JSON_unescape(s){
+    StringReplace, s, s, \\\\, \\, All
+    StringReplace, s, s, \\', ',   All
+    StringReplace, s, s, \\", ",   All
+    return s
+}
 
-								uffff := Abs("0x" . SubStr(value, i+2, 4))
-								if (A_IsUnicode || uffff < 0x100)
-									value := SubStr(value, 1, i-1) . Chr(uffff) . SubStr(value, i+6)
-							}
+// Turns an object to a JSON string                                      //
+JSON_to(obj, spacing = 50, block = "    ", level = "1" ) {
 
-							if (is_key) {
-								key := value, next := ":"
-								continue
-							}
-						
-						} else {
-							value := SubStr(text, pos, i := RegExMatch(text, "[\]\},\s]|$",, pos)-pos)
+    s := ""
+    for k, v in obj
+    {
+        // New line                        //
+        if (s != "")
+            s .= ","
+        s .= "\n"
 
-							static number := "number", integer :="integer"
-							if value is %number%
-							{
-								if value is %integer%
-									value += 0
-							}
-							else if (value == "true" || value == "false")
-								value := %value% + 0
-							else if (value == "null")
-								value := ""
-							else
-							; we can do more here to pinpoint the actual culprit
-							; but that's just too much extra work.
-								this.ParseError(next, text, pos, i)
+        // Indent key                      //
+        Loop, %level%
+            s .= block
 
-							pos += i-1
-						}
+        // Escape key and value            //
+        k := JSON_escape(k)
+        v := JSON_escape(v)
 
-						next := holder==root ? "" : is_array ? ",]" : ",}"
-					} ; If InStr("{[", ch) { ... } else
+        // Write key                       //
+        s .= """" k """: "
 
-					is_array? key := ObjPush(holder, value) : holder[key] := value
+        // If object, do recursion         //
+        if (isobject(v)) {
+            s .= JSON_to(v, spacing, block, level + 1 )
+        } else {
+ 
+            // LeftAlign the second column      //
+            totalKeyLength := level * strlen(block) + strlen(k) + 2
+            if (spacing >= totalKeyLength ) {
+                valueIndent := spacing - totalKeyLength
+                loop, %valueIndent%
+                    s .= " "
+            }
+            // Quote non-number values          //
+            if v is not number
+                v := """" v """"
 
-					if (this.keys && this.keys.HasKey(holder))
-						this.keys[holder].Push(key)
-				}
-			
-			} ; while ( ... )
+            // New line                         //
+            s .= v
+        }
+    }
 
-			return this.rev ? this.Walk(root, "") : root[""]
-		}
+    // Return                          //
+    if ( (s == "") && !isobject(obj) ) {
+        s := Object()
+    } else if ( (s == "") && isobject(obj) ) {
+        s := "{}"
+    } else {
+        s := "{" s "\n"
+        level -= 1
+        Loop, %level%
+            s .= block
+        s .= "}"
+    }
+    return s
 
-		ParseError(expect, ByRef text, pos, len:=1)
-		{
-			static quot := Chr(34), qurly := quot . "}"
-			
-			line := StrSplit(SubStr(text, 1, pos), "`n", "`r").Length()
-			col := pos - InStr(text, "`n",, -(StrLen(text)-pos+1))
-			msg := Format("{1}`n`nLine:`t{2}`nCol:`t{3}`nChar:`t{4}"
-			,     (expect == "")     ? "Extra data"
-			    : (expect == "'")    ? "Unterminated string starting at"
-			    : (expect == "\")    ? "Invalid \escape"
-			    : (expect == ":")    ? "Expecting ':' delimiter"
-			    : (expect == quot)   ? "Expecting object key enclosed in double quotes"
-			    : (expect == qurly)  ? "Expecting object key enclosed in double quotes or object closing '}'"
-			    : (expect == ",}")   ? "Expecting ',' delimiter or object closing '}'"
-			    : (expect == ",]")   ? "Expecting ',' delimiter or array closing ']'"
-			    : InStr(expect, "]") ? "Expecting JSON value or array closing ']'"
-			    :                      "Expecting JSON value(string, number, true, false, null, object or array)"
-			, line, col, pos)
+}
 
-			static offset := A_AhkVersion<"2" ? -3 : -4
-			throw Exception(msg, offset, SubStr(text, pos, len))
-		}
+//  Initialize the shift-reduce tables                                       //
+JSON_init(){
 
-		Walk(holder, key)
-		{
-			value := holder[key]
-			if IsObject(value) {
-				for i, k in this.keys[value] {
-					; check if ObjHasKey(value, k) ??
-					v := this.Walk(value, k)
-					if (v != JSON.Undefined)
-						value[k] := v
-					else
-						ObjDelete(value, k)
-				}
-			}
-			
-			return this.rev.Call(holder, key, value)
-		}
-	}
+    #EscapeChar `
+    global JSON_regexps, JSON_rules
 
-	/**
-	 * Method: Dump
-	 *     Converts an AHK value into a JSON string
-	 * Syntax:
-	 *     str := JSON.Dump( value [, replacer, space ] )
-	 * Parameter(s):
-	 *     str        [retval] - JSON representation of an AHK value
-	 *     value          [in] - any value(object, string, number)
-	 *     replacer  [in, opt] - function object, similar to JavaScript's
-	 *                           JSON.stringify() 'replacer' parameter
-	 *     space     [in, opt] - similar to JavaScript's JSON.stringify()
-	 *                           'space' parameter
-	 */
-	class Dump extends JSON.Functor
-	{
-		Call(self, value, replacer:="", space:="")
-		{
-			this.rep := IsObject(replacer) ? replacer : ""
+    //  symbol : regexp          //
+    JSON_regexps := Object( ""
+        . " " , "(\s+)"
+        , "{" , "({)"
+        , "[" , "(\[)"
+        , "]" , "(\])"
+        , "}" , "(})"
+        , "Q" , "'([^'\\]*(\\.[^'\\]*)*)'"
+        , "S" , """([^""\\]*(\\.[^""\\]*)*)"""
+        , "N" , "([+\-]?\d+([.,]\d+)?)"
+        , "D" , "(true|false|null)"
+        , ":" , "(:)"
+        , "," , "(,)" 
+    . "" )
 
-			this.gap := ""
-			if (space) {
-				static integer := "integer"
-				if space is %integer%
-					Loop, % ((n := Abs(space))>10 ? 10 : n)
-						this.gap .= " "
-				else
-					this.gap := SubStr(space, 1, 10)
+    //  1) Match "key" in the symbol stack                                   //
+    //  2) Replace with "sub" in the symbol stack                            //
+    //  3) Remove len("key") from the result stack                           //
+    //  4) Append the result of function "func" on the result stack          //
+    JSON_rules    := Object()
+    JSON_rules[0] := Object( "key", "(\s+)",                             "sub", "" , "func", "JSON_reduce_spaces"   )
+    JSON_rules[1] := Object( "key", "([QS]:[QSNOAD])",                   "sub", "_", "func", "JSON_reduce_keyvalue" )
+    JSON_rules[2] := Object( "key", "(\[(([QSNOAD](,[QSNOAD])*\])|\]))", "sub", "A", "func", "JSON_reduce_array"    )
+    JSON_rules[3] := Object( "key", "({}|{_(,_)*})",                     "sub", "O", "func", "JSON_reduce_object"   )
 
-				this.indent := "`n"
-			}
+    #Escapechar \
 
-			return this.Str({"": value}, "")
-		}
+}
 
-		Str(holder, key)
-		{
-			value := holder[key]
+// Reducing functions                                                       //
+// Space                           //
+JSON_reduce_spaces(c)  { 
+    return ""
+}
+// Key-value pair                  //
+JSON_reduce_keyvalue(c){
+    return Object(c[3], c[1])
+}
+// Array                           //
+JSON_reduce_array(c){
+    ret := Object()
 
-			if (this.rep)
-				value := this.rep.Call(holder, key, ObjHasKey(holder, key) ? value : JSON.Undefined)
+    new_idx := (c.maxindex() - 1) \/\/ 2
+    for old_idx, token in c {
+        if (mod(old_idx,2) == 0) {
+            ret[new_idx] := token
+            new_idx -= 1
+        }
+    }
+    return ret
+}
+// Objects                         //
+JSON_reduce_object(c){
+    ret := Object()
+    for old_idx, key_val in c {
+        if (mod(old_idx,2) == 0) {
+            for key, val in key_val {
+                ret[key] := val
+            }
+        }
+    }
+    return ret
+}
 
-			if IsObject(value) {
-			; Check object type, skip serialization for other object types such as
-			; ComObject, Func, BoundFunc, FileObject, RegExMatchObject, Property, etc.
-				static type := A_AhkVersion<"2" ? "" : Func("Type")
-				if (type ? type.Call(value) == "Object" : ObjGetCapacity(value) != "") {
-					if (this.gap) {
-						stepback := this.indent
-						this.indent .= this.gap
-					}
 
-					is_array := value.IsArray
-				; Array() is not overridden, rollback to old method of
-				; identifying array-like objects. Due to the use of a for-loop
-				; sparse arrays such as '[1,,3]' are detected as objects({}). 
-					if (!is_array) {
-						for i in value
-							is_array := i == A_Index
-						until !is_array
-					}
 
-					str := ""
-					if (is_array) {
-						Loop, % value.Length() {
-							if (this.gap)
-								str .= this.indent
-							
-							v := this.Str(value, A_Index)
-							str .= (v != "") ? v . "," : "null,"
-						}
-					} else {
-						colon := this.gap ? ": " : ":"
-						for k in value {
-							v := this.Str(value, k)
-							if (v != "") {
-								if (this.gap)
-									str .= this.indent
+// Main parsing method                                                                      //
+JSON_from(s){
 
-								str .= this.Quote(k) . colon . v . ","
-							}
-						}
-					}
+    ret     := Object()
+    pos     := 1
+    symbols := ""
+    len     := strLen(s)
 
-					if (str != "") {
-						str := RTrim(str, ",")
-						if (this.gap)
-							str .= stepback
-					}
+    //   Loop over the tokens         //
+    while (pos <= len) {
 
-					if (this.gap)
-						this.indent := stepback
+        // Shift a token                 //
+        t := JSON_shift(s,pos,symbols,ret)
 
-					return is_array ? "[" . str . "]" : "{" . str . "}"
-				}
-			
-			} else ; is_number ? value : "value"
-				return ObjGetCapacity([value], 1)=="" ? value : this.Quote(value)
-		}
+        // Reduce                       //
+        symbols := JSON_reduce(t["symbols"],ret), pos := t["pos"]
 
-		Quote(string)
-		{
-			static quot := Chr(34), bashq := "\" . quot
+    }
 
-			if (string != "") {
-				  string := StrReplace(string,  "\",  "\\")
-				; , string := StrReplace(string,  "/",  "\/") ; optional in ECMAScript
-				, string := StrReplace(string, quot, bashq)
-				, string := StrReplace(string, "`b",  "\b")
-				, string := StrReplace(string, "`f",  "\f")
-				, string := StrReplace(string, "`n",  "\n")
-				, string := StrReplace(string, "`r",  "\r")
-				, string := StrReplace(string, "`t",  "\t")
+    // If succesfully reduced, return the object/array    //
+    if (symbols == "O" || symbols == "A")
+        return ret[""]
+    else
+        JSON_error("Invalid JSON string, cannot convert to object.")
+}
 
-				static rx_escapable := A_AhkVersion<"2" ? "O)[^\x20-\x7e]" : "[^\x20-\x7e]"
-				while RegExMatch(string, rx_escapable, m)
-					string := StrReplace(string, m.Value, Format("\u{1:04x}", Ord(m.Value)))
-			}
 
-			return quot . string . quot
-		}
-	}
 
-	/**
-	 * Property: Undefined
-	 *     Proxy for 'undefined' type
-	 * Syntax:
-	 *     undefined := JSON.Undefined
-	 * Remarks:
-	 *     For use with reviver and replacer functions since AutoHotkey does not
-	 *     have an 'undefined' type. Returning blank("") or 0 won't work since these
-	 *     can't be distnguished from actual JSON values. This leaves us with objects.
-	 *     Replacer() - the caller may return a non-serializable AHK objects such as
-	 *     ComObject, Func, BoundFunc, FileObject, RegExMatchObject, and Property to
-	 *     mimic the behavior of returning 'undefined' in JavaScript but for the sake
-	 *     of code readability and convenience, it's better to do 'return JSON.Undefined'.
-	 *     Internally, the property returns a ComObject with the variant type of VT_EMPTY.
-	 */
-	Undefined[]
-	{
-		get {
-			static empty := {}, vt_empty := ComObject(0, &empty, 1)
-			return vt_empty
-		}
-	}
+//  Read a token and shift in symbol to the stack                                          //
+JSON_shift(s, pos, symbols, ret){
 
-	class Functor
-	{
-		__Call(method, ByRef arg, args*)
-		{
-		; When casting to Call(), use a new instance of the "function object"
-		; so as to avoid directly storing the properties(used across sub-methods)
-		; into the "function object" itself.
-			if IsObject(method)
-				return (new this).Call(method, arg, args*)
-			else if (method == "")
-				return (new this).Call(arg, args*)
-		}
-	}
+    global JSON_regexps
+
+    for symbol,regexp in JSON_regexps {
+
+        // match 1 includes quotes, match 2 doesn't       //
+        RegexMatch(s, "PSi)(" . regexp . ")", match_, pos)
+        if (match_pos1 == pos){
+
+            // Add current state to the symbol stack          //
+            symbols .= symbol
+
+            // Update position                                //
+            pos  += match_len1
+
+            // Insert the value in the value stack            //
+            ret.insert( JSON_unescape(substr(s, match_pos2, match_len2)) )
+
+            // Return the updated symbol stack and pos        // 
+            return Object("symbols", symbols, "pos", pos)
+        }
+    }
+
+    // If there is nothing to shift, error  //
+    JSON_error("Error at pos:" pos "\n" substr(s,pos-4))
+    exit
+}
+
+
+
+//  Reduces groups of symbols into others according to the rule table                       //
+JSON_reduce(symbols, ret){
+
+    global JSON_regexps, JSON_rules
+
+    rule_idx := 0
+
+    // Loop over rules, to check if it's possible to reduce tokens //
+    while (rule_idx <= JSON_rules.maxIndex()) {
+
+        children    := Object()
+        rule        := JSON_rules[rule_idx]
+        old_symbols := rule["key"]
+        new_symbol  := rule["sub"]
+        reduce_func := rule["func"]
+
+        // Find something to reduce //
+        Regexmatch(symbols, "PSi)" . old_symbols . "$", match_)
+
+        // If you find nothing, continue to the next rule //
+        if ( match_pos1 < 1 ) {
+            rule_idx += 1
+            continue
+        }
+
+        // If you find something, remove the symbols from the symbols stack  //
+        // and reduce the tokens in the result stack                         //
+        Loop, %match_len1% {
+            if (ryle_idx != 0 )
+                children.insert( ret[ret.maxindex()] )
+            ret.remove()
+            stringtrimright, symbols, symbols, 1
+        }
+
+        // Append the reduced symbol to the symbol stack  //
+        symbols .= new_symbol
+        rule_idx := 0
+
+        // Reduce the tokens into a new one  //
+        if ((new_token := %reduce_func%(children)) != "")
+            ret[ret.maxindex()+1] := new_token
+
+    }
+
+    return symbols
+
 }

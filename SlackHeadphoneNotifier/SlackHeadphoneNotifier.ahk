@@ -4,7 +4,8 @@
 Menu, TRAY, Icon, headphones.ico
 Menu, TRAY, Tip, Slack Headphone Notifier by Dash
 
-priorIsPlaying := ""
+priorSong := ""
+priorTime := ""
 http := comobjcreate("WinHTTP.WinHttpRequest.5.1")
 
 EnvGet, SlackToken, SlackToken
@@ -12,28 +13,35 @@ EnvGet, SlackToken, SlackToken
 setTimer, main, 5000
 
 main:
-  isPlaying := getIsPlaying()
+  parsed := JSON_load("playback.json")
+  currentSong := parsed["song","title"]
+  currentArtist := parsed["song","artist"]
+  currentTime := parsed["time","current"]
   
-  if (isPlaying != priorIsPlaying) {
-    priorIsPlaying := isPlaying
-  
-    if (isPlaying) { 
-      message := "Dash is listening to music."
+  if (priorTime != currentTime) {
+    priorTime := currentTime
+     
+    if (priorSong != currentSong) {
       emoji := ":headphones:"
-    } else {
-      message := ""
-      emoji := ""
+      message := "Dash is listening to " currentSong " by " currentArtist
+      priorSong := currentSong
     }
-       
-    http.Open("POST", "https://slack.com/api/users.profile.set", 0)
-    http.SetRequestHeader("Content-type", "application/x-www-form-urlencoded")
-    http.SetRequestHeader("Authorization", "Bearer " . SlackToken)
-    http.Send("profile={""status_text"":""" message """, ""status_emoji"":""" emoji """}")
-  }  
+  } else if (priorSong != "") {
+    emoji := ""
+    message := ""
+    priorSong := ""
+  }
+  
+  http.Open("POST", "https://slack.com/api/users.profile.set", 0)
+  http.SetRequestHeader("Content-Type", "application/x-www-form-urlencoded")
+  http.SetRequestHeader("Authorization", "Bearer " . SlackToken)
+  http.Send("profile={""status_text"":""" message """, ""status_emoji"":""" emoji """}")
+    
   return
 
-getIsPlaying() {
-  fileread newFileContent, playback.json
-  parsed := JSON.Load(newFileContent)
-  return parsed.playing
-}
+
+  
+  
+  
+  
+  
